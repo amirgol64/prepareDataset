@@ -21,7 +21,7 @@ def open_video():
     file_path = filedialog.askopenfilename(filetypes=[("MP4 files", "*.mp4")])
     if file_path:
         video1_path = file_path
-        video2_path = file_path.replace(".mp4", "_raw.mp4")  # Assuming a naming pattern
+        video2_path = file_path.replace("detected", "raw").replace(".mp4", "_raw.mp4")  # Assuming a naming pattern
         print(f"video1_path: {video1_path}")
         print(f"video2_path: {video2_path}")
         if not os.path.exists(video2_path):
