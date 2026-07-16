@@ -33,7 +33,7 @@ A tool for preparing images for annotation. This script splits images into two s
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/prepareDataset.git
+   git clone https://github.com/amirgol64/prepareDataset.git
    cd prepareDataset
    ```
 
