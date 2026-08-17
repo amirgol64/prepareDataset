@@ -18,10 +18,14 @@ Defaults (CROP_Y_OFF=60, CROP_SIZE=960, RESIZE_TO=640) give:
 Images whose dimensions do not match the expected frame size (default
 1920x1080) are skipped and listed in the log with their actual size.
 
+Settings (folders, crop values, toggles, window size) are remembered between
+runs in %APPDATA%/FrameSplitter/settings.json.
+
 Requires: opencv-python, numpy, tkinter (no Pillow needed).
 Run:  .venv/Scripts/python.exe splitImages.py
 """
 
+import json
 import os
 import queue
 import threading
@@ -41,6 +45,7 @@ DEFAULT_CROP_SIZE = 960
 DEFAULT_RESIZE_TO = 640
 DEFAULT_EXPECT_W = 1920
 DEFAULT_EXPECT_H = 1080
+DEFAULT_GEOMETRY = "1020x720"
 
 # --- palette -----------------------------------------------------------------
 BG = "#14161a"
@@ -54,6 +59,36 @@ ACCENT_DIM = "#3a6fd0"
 OK = "#3ecf8e"
 WARN = "#f2b544"
 ERR = "#ff6b6b"
+
+
+# --- settings ----------------------------------------------------------------
+def settings_path():
+    """Location of the remembered-settings file (roaming app data on Windows)."""
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "FrameSplitter", "settings.json")
+
+
+def load_settings():
+    """Read the settings file. Missing or damaged files just mean 'defaults'."""
+    try:
+        with open(settings_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_settings(data):
+    """Write the settings file, replacing it atomically. Never raises."""
+    path = settings_path()
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+        os.replace(tmp, path)
+    except (OSError, ValueError):
+        pass  # remembering settings is a convenience, never a reason to fail
 
 
 # --- image helpers -----------------------------------------------------------
@@ -237,26 +272,101 @@ class App:
         self.files = []
         self.preview_src = None      # BGR image used for the preview
         self.photos = {}             # keep PhotoImage refs alive
+        self.settings = load_settings()
 
-        self.in_dir = tk.StringVar(value="")
-        self.out_dir = tk.StringVar(value="")
-        self.y_off = tk.IntVar(value=DEFAULT_CROP_Y_OFF)
-        self.crop_size = tk.IntVar(value=DEFAULT_CROP_SIZE)
-        self.check_size = tk.BooleanVar(value=True)
-        self.expect_w = tk.IntVar(value=DEFAULT_EXPECT_W)
-        self.expect_h = tk.IntVar(value=DEFAULT_EXPECT_H)
-        self.do_resize = tk.BooleanVar(value=True)
-        self.resize_to = tk.IntVar(value=DEFAULT_RESIZE_TO)
-        self.recursive = tk.BooleanVar(value=False)
-        self.auto_presplit = tk.BooleanVar(value=True)
-        self.out_format = tk.StringVar(value="PNG")
+        self.in_dir = tk.StringVar(value=self._pref_dir("in_dir"))
+        self.out_dir = tk.StringVar(value=self._pref_dir("out_dir"))
+        self.y_off = tk.IntVar(value=self._pref_int("y_off", DEFAULT_CROP_Y_OFF, 0, 4000))
+        self.crop_size = tk.IntVar(
+            value=self._pref_int("crop_size", DEFAULT_CROP_SIZE, 1, 8000))
+        self.check_size = tk.BooleanVar(value=self._pref_bool("check_size", True))
+        self.expect_w = tk.IntVar(
+            value=self._pref_int("expect_w", DEFAULT_EXPECT_W, 1, 20000))
+        self.expect_h = tk.IntVar(
+            value=self._pref_int("expect_h", DEFAULT_EXPECT_H, 1, 20000))
+        self.do_resize = tk.BooleanVar(value=self._pref_bool("do_resize", True))
+        self.resize_to = tk.IntVar(
+            value=self._pref_int("resize_to", DEFAULT_RESIZE_TO, 1, 8000))
+        self.recursive = tk.BooleanVar(value=self._pref_bool("recursive", False))
+        self.auto_presplit = tk.BooleanVar(value=self._pref_bool("auto_presplit", True))
+        self.out_format = tk.StringVar(value=self._pref_choice("out_format",
+                                                               ("PNG", "JPG"), "PNG"))
         self.status = tk.StringVar(value="Select a folder of images to begin.")
         self.count_text = tk.StringVar(value="No folder selected")
         self.tally = tk.StringVar(value="")
 
         self._build_style()
         self._build_ui()
-        self.root.after(60, self._pump_events)
+        self._apply_restored_settings()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.pump_job = self.root.after(60, self._pump_events)
+
+    # -- remembered settings --
+    def _pref_int(self, key, default, lo, hi):
+        """Saved integer, falling back to the default if absent or out of range."""
+        try:
+            value = int(self.settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if lo <= value <= hi else default
+
+    def _pref_bool(self, key, default):
+        value = self.settings.get(key)
+        return value if isinstance(value, bool) else default
+
+    def _pref_choice(self, key, allowed, default):
+        value = self.settings.get(key)
+        return value if value in allowed else default
+
+    def _pref_dir(self, key):
+        """Saved folder, but only if it still exists on disk."""
+        value = self.settings.get(key)
+        return value if isinstance(value, str) and os.path.isdir(value) else ""
+
+    def _apply_restored_settings(self):
+        """Bring the UI in line with the values restored from disk."""
+        geometry = self.settings.get("window")
+        if isinstance(geometry, str) and geometry:
+            try:
+                self.root.geometry(geometry)
+            except tk.TclError:
+                pass
+        self.on_size_toggle()
+        self.on_resize_toggle()
+        if os.path.isdir(self.in_dir.get()):
+            self.rescan()
+
+    def _var_int(self, var, key, default):
+        """Current value of an int var, or the last saved one if the field is blank."""
+        try:
+            return int(var.get())
+        except (tk.TclError, ValueError):
+            return self._pref_int(key, default, 0, 20000)
+
+    def _collect_settings(self):
+        in_dir = self.in_dir.get()
+        out_dir = self.out_dir.get()
+        return {
+            "in_dir": in_dir if os.path.isdir(in_dir) else "",
+            "out_dir": out_dir if not out_dir.startswith("—") else "",
+            "y_off": self._var_int(self.y_off, "y_off", DEFAULT_CROP_Y_OFF),
+            "crop_size": self._var_int(self.crop_size, "crop_size", DEFAULT_CROP_SIZE),
+            "check_size": self.check_size.get(),
+            "expect_w": self._var_int(self.expect_w, "expect_w", DEFAULT_EXPECT_W),
+            "expect_h": self._var_int(self.expect_h, "expect_h", DEFAULT_EXPECT_H),
+            "do_resize": self.do_resize.get(),
+            "resize_to": self._var_int(self.resize_to, "resize_to", DEFAULT_RESIZE_TO),
+            "recursive": self.recursive.get(),
+            "auto_presplit": self.auto_presplit.get(),
+            "out_format": self.out_format.get(),
+            "window": "%dx%d" % (self.root.winfo_width(), self.root.winfo_height()),
+        }
+
+    def on_close(self):
+        save_settings(self._collect_settings())
+        self.cancel_event.set()
+        self.root.after_cancel(self.pump_job)
+        self.root.destroy()
 
     # -- styling --
     def _build_style(self):
@@ -325,7 +435,7 @@ class App:
     # -- layout --
     def _build_ui(self):
         self.root.title("%s %s" % (APP_TITLE, APP_VERSION))
-        self.root.geometry("1020x720")
+        self.root.geometry(DEFAULT_GEOMETRY)
         self.root.minsize(940, 660)
 
         header = ttk.Frame(self.root, padding=(20, 16, 20, 8))
@@ -372,8 +482,10 @@ class App:
         ttk.Label(card, textvariable=self.count_text,
                   style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
 
-        self.in_dir.set("— not selected —")
-        self.out_dir.set("— not selected —")
+        if not self.in_dir.get():
+            self.in_dir.set("— not selected —")
+        if not self.out_dir.get():
+            self.out_dir.set("— not selected —")
 
     def _build_params(self, parent):
         card = self._card(parent, "Crop settings")
@@ -702,7 +814,7 @@ class App:
                     self._on_done(kind, payload)
         except queue.Empty:
             pass
-        self.root.after(60, self._pump_events)
+        self.pump_job = self.root.after(60, self._pump_events)
 
     def _on_done(self, kind, payload):
         done, skipped, failed = payload

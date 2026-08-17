@@ -15,6 +15,7 @@ of the crop before you run the batch.
 - Frames that do not match the expected input size are skipped and listed in the log.
 - PNG or JPG output (JPG written at quality 95).
 - Unicode-safe file reading and writing (works with non-ASCII paths).
+- Remembers your folders, crop settings and window size between sessions.
 - Runs the batch on a background thread with a progress bar and a cancel button.
 
 ---
@@ -52,6 +53,17 @@ detected automatically and simply halved down the middle — no cropping applied
 | Resize to              | `640`       | Square output size; disable to keep the crop size |
 | Output format          | `PNG`       | `PNG` or `JPG`                                    |
 | Include subfolders     | off         | Recurse into the input folder                     |
+
+Settings are saved when you close the window and restored on the next launch,
+from:
+
+```
+%APPDATA%\FrameSplitter\settings.json
+```
+
+Delete that file to go back to the defaults. A missing, unreadable or damaged
+file is ignored silently, and a remembered folder that no longer exists is
+dropped rather than restored.
 
 ### Output
 
