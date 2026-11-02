@@ -51,6 +51,7 @@ crops exactly like `splitImages.py` does.
 | Tab | Toggle detected ↔ raw view |
 | Ctrl+G | Focus go-to-frame box (1-based number, Enter jumps, Esc leaves) |
 | Home / End | First / last frame |
+| PgUp / PgDn | Previous / next movie in the folder |
 | Ctrl+O | Open movie |
 
 ## Steps
@@ -138,9 +139,16 @@ Each step ends with a working app you can try before we move on.
   Tab shows the raw movie with a RAW tag (info bar: SHOWING RAW); S always saves from
   raw regardless of the view.
 
-### Step 7 — Folder pair list + remembered settings
+### Step 7 — Folder pair list + remembered settings ✅
 - Side panel of all pairs in the folder (5).
 - Settings in `%APPDATA%/FramePlayer/settings.json`, incl. per-movie position (21).
+- Done: left "Movies in folder" panel (pairs + raw-only/no-raw movies, "no raw" in
+  amber, "N saved" per movie); click or PgUp / PgDn switches. Settings remember last
+  movie (reopened when started without an argument), frame position per movie (newest
+  200), crop / resize, custom output folder, speed, window size and maximized state
+  (a saved size larger than the current screen is ignored).
+  Tested with remuxed clips A/B (pairs) + C (no raw): list, switching, resume per movie
+  and a full restart all restore the expected state.
 
 ### Step 8 — Sample movie in the repo
 - Cut a 10 s pair from the test files: `samples/sample.mkv` + `samples/sample_raw.mkv`

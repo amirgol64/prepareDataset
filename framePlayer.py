@@ -1,5 +1,5 @@
 """
-Frame Player v0.6
+Frame Player v0.7
 
 VLC-style frame player for building datasets from paired MKV recordings.
 You browse the *detected* movie (name.mkv, boxes drawn in) and save the
@@ -31,11 +31,12 @@ import cv2
 
 from splitImages import (
     ACCENT, BG, BORDER, DEFAULT_CROP_SIZE, DEFAULT_RESIZE_TO, ERR, MUTED, OK,
-    SURFACE_ALT, TEXT, WARN, apply_style, imwrite_unicode, split_frame, to_photo,
+    SURFACE_ALT, TEXT, WARN, apply_style, imwrite_unicode, load_settings,
+    save_settings as write_settings, split_frame, to_photo,
 )
 
 APP_TITLE = "Frame Player"
-APP_VERSION = "v0.6"
+APP_VERSION = "v0.7"
 SETTINGS_APP = "FramePlayer"
 
 RAW_SUFFIX = "_raw"
@@ -51,6 +52,7 @@ BAD_COLOR = (107, 107, 255)
 MARK_COLOR = OK                  # saved-frame ticks on the seek bar
 RAW_TAG_COLOR = (68, 181, 242)   # BGR of WARN: "RAW" label on the raw view
 SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
+MAX_POSITIONS = 200              # remembered per-movie frame positions
 
 
 # --- pairing -----------------------------------------------------------------
@@ -66,6 +68,38 @@ def find_pair(path):
         detected, raw = path, root + RAW_SUFFIX + ext
     return (detected if os.path.isfile(detected) else None,
             raw if os.path.isfile(raw) else None)
+
+
+def list_pairs(folder):
+    """[(stem, detected_path or None, raw_path or None)] for every movie in folder."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    pairs = {}
+    for name in names:
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in VIDEO_EXTS or not os.path.isfile(os.path.join(folder, name)):
+            continue
+        is_raw = stem.endswith(RAW_SUFFIX)
+        base = stem[:-len(RAW_SUFFIX)] if is_raw else stem
+        entry = pairs.setdefault(base, [None, None])
+        entry[1 if is_raw else 0] = os.path.join(folder, name)
+    return [(stem, det, raw) for stem, (det, raw) in
+            sorted(pairs.items(), key=lambda item: item[0].lower())]
+
+
+def saved_indices(folder, stem):
+    """0-based frame indices of `stem` whose _left file is in `folder`."""
+    found = set()
+    if not os.path.isdir(folder):
+        return found
+    pattern = re.compile(r"^%s_f(\d{6})_left%s$" % (re.escape(stem), re.escape(SAVE_EXT)))
+    for name in os.listdir(folder):
+        match = pattern.match(name)
+        if match:
+            found.add(int(match.group(1)) - 1)
+    return found
 
 
 # --- reader ------------------------------------------------------------------
@@ -241,16 +275,23 @@ class App:
     SEEK_H = 22          # seek bar height (px)
     SEEK_PAD = 10        # space left/right of the track for the handle
     SIDE_W = 270         # side panel width (px)
+    MOVIES_CHARS = 24    # movie list width (characters)
 
     def __init__(self, root):
         self.root = root
+        self.settings = load_settings(SETTINGS_APP)
+        positions = self.settings.get("positions")
+        # movie path -> last frame index
+        self.positions = ({k: v for k, v in positions.items() if isinstance(v, int)}
+                          if isinstance(positions, dict) else {})
+        self.movies = []            # list_pairs() of the current folder
         self.det = None             # VideoReader for the detected movie
         self.raw = None             # VideoReader for the raw movie, or None
         self.index = 0              # frame on screen (0-based)
         self.target = 0             # frame the keys asked for
         self.render_pending = False
         self.playing = False
-        self.speed = 1.0
+        self.speed = self.settings.get("speed") if self.settings.get("speed") in SPEEDS else 1.0
         self.play_job = None
         self.play_anchor = None     # (wall clock, movie seconds) playback started from
         self.view_raw = False       # Tab: show the raw movie instead of detected
@@ -264,11 +305,14 @@ class App:
         self.goto_text = tk.StringVar(value="")
         self.info = {key: tk.StringVar(value="—") for key in
                      ("frame", "time", "fps", "speed", "source", "saved")}
-        self.y_off = tk.IntVar(value=DEFAULT_Y_OFF)
-        self.crop_size = tk.IntVar(value=DEFAULT_CROP_SIZE)
-        self.do_resize = tk.BooleanVar(value=True)
-        self.resize_to = tk.IntVar(value=DEFAULT_RESIZE_TO)
-        self.out_custom = None      # output folder picked by the user, if any
+        self.y_off = tk.IntVar(value=self._pref_int("y_off", DEFAULT_Y_OFF, 0, 8000))
+        self.crop_size = tk.IntVar(value=self._pref_int("crop_size", DEFAULT_CROP_SIZE, 1, 8000))
+        self.do_resize = tk.BooleanVar(value=self._pref_bool("do_resize", True))
+        self.resize_to = tk.IntVar(value=self._pref_int("resize_to", DEFAULT_RESIZE_TO, 1, 8000))
+        out_dir = self.settings.get("out_dir")
+        # Output folder picked by the user, if any (created on the first save).
+        self.out_custom = out_dir if isinstance(out_dir, str) and out_dir else None
+        self.movies_title = tk.StringVar(value="MOVIES IN FOLDER")
         self.saved = set()          # 0-based indices already in the output folder
         self.saved_order = []       # self.saved sorted, mirrors the list box rows
         self.undo_stack = []        # indices saved this session, newest last
@@ -294,6 +338,8 @@ class App:
         self.root.bind("<bracketleft>", self._key(lambda: self.change_speed(-1)))
         self.root.bind("<bracketright>", self._key(lambda: self.change_speed(1)))
         self.root.bind("<Tab>", self._key(self.toggle_view))
+        self.root.bind("<Prior>", self._key(lambda: self.switch_movie(-1)))
+        self.root.bind("<Next>", self._key(lambda: self.switch_movie(1)))
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _key(self, action):
@@ -315,6 +361,7 @@ class App:
         width = min(DEFAULT_SIZE[0], self.root.winfo_screenwidth() - 40)
         height = min(DEFAULT_SIZE[1], self.root.winfo_screenheight() - 90)
         self.root.geometry("%dx%d+20+10" % (width, height))
+        self._restore_window()
         self.root.minsize(800, 600)
 
         header = ttk.Frame(self.root, padding=(20, 16, 20, 8))
@@ -360,13 +407,35 @@ class App:
         self.status_label.pack(anchor="w", pady=(8, 0))
 
         self._build_side()
+        self._build_movies()
 
         self.video = tk.Label(self.root, bg="#000000", fg=MUTED, bd=0,
                               highlightthickness=1, highlightbackground=BORDER,
                               text="No movie", font=("Segoe UI", 11))
-        self.video.pack(fill="both", expand=True, padx=(20, 12))
+        self.video.pack(fill="both", expand=True, padx=12)
         self.video.bind("<Configure>", lambda _e: self._schedule_redraw())
         self.video.bind("<Button-1>", lambda _e: self.root.focus_set())
+
+    def _build_movies(self):
+        left = ttk.Frame(self.root, padding=(20, 0, 0, 12))
+        left.pack(side="left", fill="y")
+        card = self._card(left, textvariable=self.movies_title)
+        card.pack(fill="both", expand=True)
+        ttk.Label(card, text="Click to open  •  PgUp / PgDn", style="Muted.TLabel").pack(
+            anchor="w", pady=(4, 8))
+        holder = ttk.Frame(card, style="Card.TFrame")
+        holder.pack(fill="both", expand=True)
+        scroll = ttk.Scrollbar(holder, orient="vertical")
+        self.movie_list = tk.Listbox(
+            holder, width=self.MOVIES_CHARS, bg=SURFACE_ALT, fg=TEXT,
+            selectbackground=ACCENT, selectforeground="#ffffff", highlightthickness=0,
+            bd=0, activestyle="none", font=("Consolas", 10), exportselection=False,
+            yscrollcommand=scroll.set)
+        scroll.configure(command=self.movie_list.yview)
+        scroll.pack(side="right", fill="y")
+        self.movie_list.pack(side="left", fill="both", expand=True)
+        self.movie_list.bind("<<ListboxSelect>>", self._on_movie_select)
+        self.movie_list.bind("<space>", lambda _e: (self.toggle_play(), "break")[1])
 
     def _build_side(self):
         side = ttk.Frame(self.root, padding=(0, 0, 20, 0))
@@ -457,6 +526,8 @@ class App:
             return
 
         self.pause()
+        if self.det is not None:
+            self.positions[self.det.path] = self.index
         self._set_status("Indexing %s…" % os.path.basename(det_path))
         self.root.update_idletasks()
         self._close_readers()
@@ -493,7 +564,14 @@ class App:
         self.view_raw = False
         self._refresh_output()
         self._on_crop_change()
-        self.show(0)
+        self._refresh_movies()
+        resume = self.positions.pop(det_path, 0)    # re-added on save: newest last
+        resume = self.det.clamp(resume if isinstance(resume, int) else 0)
+        self.show(resume)
+        if resume:
+            self._set_status("%s  Resumed at frame %d." % (self.status.get(), resume + 1),
+                             self.status_label.cget("foreground"))
+        self.save_settings()
 
     def _close_readers(self):
         for reader in (self.det, self.raw):
@@ -762,15 +840,8 @@ class App:
     def _refresh_output(self):
         """Re-read which frames of this movie are already in the output folder."""
         self.out_text.set(self.output_dir() or "—")
-        self.saved = set()
-        folder = self.output_dir()
-        if self.det is not None and os.path.isdir(folder):
-            pattern = re.compile(r"^%s_f(\d{6})_left%s$"
-                                 % (re.escape(self.movie_stem()), re.escape(SAVE_EXT)))
-            for name in os.listdir(folder):
-                match = pattern.match(name)
-                if match:
-                    self.saved.add(int(match.group(1)) - 1)
+        self.saved = (saved_indices(self.output_dir(), self.movie_stem())
+                      if self.det is not None else set())
         self.undo_stack = []        # undo only covers saves into this folder
         self._sync_saved()
 
@@ -910,8 +981,110 @@ class App:
             self.go_to(index)
             self._set_status("Undone: frame %d removed." % (index + 1), OK)
 
+    # -- movies in folder --
+    def _refresh_movies(self):
+        """List every movie pair in the current movie's folder."""
+        self.movies = list_pairs(os.path.dirname(self.det.path)) if self.det else []
+        self.movie_list.delete(0, "end")
+        current = None
+        for row, (stem, det_path, raw_path) in enumerate(self.movies):
+            if raw_path is None:
+                note = "no raw"
+            else:
+                folder = self.out_custom or os.path.join(os.path.dirname(det_path or raw_path),
+                                                         stem + FRAMES_DIR_SUFFIX)
+                count = len(saved_indices(folder, stem))
+                note = "%d saved" % count if count else ""
+            self.movie_list.insert("end", "%s  %s" % (stem, note) if note else stem)
+            if raw_path is None:
+                self.movie_list.itemconfigure(row, foreground=WARN)
+            if self.det is not None and self.det.path in (det_path, raw_path):
+                current = row
+        self.movies_title.set("MOVIES IN FOLDER  (%d)" % len(self.movies))
+        if current is not None:
+            self.movie_list.selection_set(current)
+            self.movie_list.see(current)
+
+    def _on_movie_select(self, _event=None):
+        picked = self.movie_list.curselection()
+        if not picked:
+            return
+        _stem, det_path, raw_path = self.movies[picked[0]]
+        path = det_path or raw_path
+        if self.det is None or self.det.path != path:
+            self.load(path)
+
+    def switch_movie(self, direction):
+        """PgUp / PgDn: previous / next movie in the folder."""
+        if not self.movies or self.det is None:
+            return
+        paths = [det or raw for _stem, det, raw in self.movies]
+        row = paths.index(self.det.path) if self.det.path in paths else 0
+        row = max(0, min(row + direction, len(paths) - 1))
+        if paths[row] != self.det.path:
+            self.load(paths[row])
+
+    # -- remembered settings --
+    def _pref_int(self, key, default, lo, hi):
+        """Saved integer, falling back to the default if absent or out of range."""
+        try:
+            value = int(self.settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if lo <= value <= hi else default
+
+    def _pref_bool(self, key, default):
+        value = self.settings.get(key)
+        return value if isinstance(value, bool) else default
+
+    def _var_int(self, var, key, default):
+        """Current value of an int var, or the last saved one if the field is blank."""
+        try:
+            return int(var.get())
+        except (tk.TclError, ValueError):
+            return self._pref_int(key, default, 0, 20000)
+
+    def _restore_window(self):
+        geometry = self.settings.get("window")
+        if not (isinstance(geometry, str)
+                and re.match(r"^\d+x\d+[+-]-?\d+[+-]-?\d+$", geometry)):
+            return
+        width, height = (int(v) for v in re.match(r"^(\d+)x(\d+)", geometry).groups())
+        # A window saved on a bigger monitor would not fit: keep the default.
+        if (width <= self.root.winfo_screenwidth()
+                and height <= self.root.winfo_screenheight()):
+            self.root.geometry(geometry)
+        if self.settings.get("zoomed") is True:
+            self.root.state("zoomed")
+
+    def save_settings(self):
+        if self.det is not None:
+            self.positions[self.det.path] = self.index
+        # Keep the newest positions only; dict order is insertion order.
+        while len(self.positions) > MAX_POSITIONS:
+            self.positions.pop(next(iter(self.positions)))
+        zoomed = self.root.state() == "zoomed"
+        if zoomed:
+            geometry = self.settings.get("window", "")
+        else:
+            geometry = self.root.geometry()
+        write_settings({
+            "last_movie": self.det.path if self.det is not None else
+                          self.settings.get("last_movie", ""),
+            "positions": self.positions,
+            "y_off": self._var_int(self.y_off, "y_off", DEFAULT_Y_OFF),
+            "crop_size": self._var_int(self.crop_size, "crop_size", DEFAULT_CROP_SIZE),
+            "do_resize": self.do_resize.get(),
+            "resize_to": self._var_int(self.resize_to, "resize_to", DEFAULT_RESIZE_TO),
+            "out_dir": self.out_custom or "",
+            "speed": self.speed,
+            "window": geometry,
+            "zoomed": zoomed,
+        }, SETTINGS_APP)
+
     def on_close(self):
         self.pause()
+        self.save_settings()
         self._close_readers()
         self.root.destroy()
 
@@ -921,6 +1094,8 @@ def main():
     app = App(root)
     if len(sys.argv) > 1:
         root.after(100, lambda: app.load(sys.argv[1]))
+    elif os.path.isfile(app.settings.get("last_movie") or ""):
+        root.after(100, lambda: app.load(app.settings["last_movie"]))
     root.mainloop()
 
 
