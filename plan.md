@@ -150,7 +150,7 @@ Each step ends with a working app you can try before we move on.
   Tested with remuxed clips A/B (pairs) + C (no raw): list, switching, resume per movie
   and a full restart all restore the expected state.
 
-### Step 8 — Sample movie in the repo
+### Step 8 — Sample movie in the repo ✅
 - Cut a 10 s pair from the test files: `samples/sample.mkv` + `samples/sample_raw.mkv`
   (same start frame in both, so the pair stays in sync).
 - Re-encode (H.264, CRF ~23) to keep each file small, target < 10 MB
@@ -159,14 +159,22 @@ Each step ends with a working app you can try before we move on.
   dependency — not needed to run the app.
 - Re-run the seek accuracy test on the sample after re-encoding.
 - `.gitignore` exceptions: `!/samples/*.mkv`, `!/docs/images/*.png`.
+- Done with `tools/make_sample.py` using PyAV's libx264 (no imageio-ffmpeg needed):
+  first 10 s = 215 frames, CRF 28, keyframe every 25 frames, original timestamps kept.
+  sample.mkv 6.6 MB, sample_raw.mkv 6.0 MB. Checks: pair OK, 44/44 exact random
+  access (~60 ms), frame i matches source frame i (211/211), PSNR 37 dB, burned-in
+  Frame_number readable and equal to the app's numbering.
 
-### Step 9 — README + screenshots
+### Step 9 — README + screenshots ✅
 - `docs/images/`: screenshots of the working app — movie loaded with crop overlay,
   detected vs raw view (Tab), saved-frame list + seek-bar markers, the saved
   `_left` / `_right` output, and (optional) a short GIF of frame stepping + S.
 - README: both tools (Frame Splitter + Frame Player), install (`.venv` +
   `requirements.txt`), "try it with `samples/`", keyboard table, output naming,
   settings location, screenshots.
+- Done: README rewritten for both tools; `docs/images/player.png`, `raw_view.png`
+  (captured from the app on the sample) and `output_example.png` (real saved crops).
+  No GIF (would need Pillow or ffmpeg just for docs).
 
 ## Shared code with `splitImages.py`
 Reused as-is: `split_frame`, `imwrite_unicode`, `to_photo`, palette constants.

@@ -14,3 +14,5 @@ __pycache__/
 *.mp4
 *.mkv
 /test_files/
+!/samples/*.mkv
+!/docs/images/*.png
