@@ -12,3 +12,5 @@ __pycache__/
 *.tif
 *.tiff
 *.mp4
+*.mkv
+/test_files/

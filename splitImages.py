@@ -62,25 +62,25 @@ ERR = "#ff6b6b"
 
 
 # --- settings ----------------------------------------------------------------
-def settings_path():
+def settings_path(app="FrameSplitter"):
     """Location of the remembered-settings file (roaming app data on Windows)."""
     base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "FrameSplitter", "settings.json")
+    return os.path.join(base, app, "settings.json")
 
 
-def load_settings():
+def load_settings(app="FrameSplitter"):
     """Read the settings file. Missing or damaged files just mean 'defaults'."""
     try:
-        with open(settings_path(), "r", encoding="utf-8") as handle:
+        with open(settings_path(app), "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def save_settings(data):
+def save_settings(data, app="FrameSplitter"):
     """Write the settings file, replacing it atomically. Never raises."""
-    path = settings_path()
+    path = settings_path(app)
     tmp = path + ".tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -178,6 +178,61 @@ def to_photo(bgr, box_w, box_h):
     if not ok:
         return None
     return tk.PhotoImage(data=buf.tobytes())
+
+
+def apply_style(root):
+    """Dark ttk theme shared by the Frame Splitter and Frame Player."""
+    root.configure(bg=BG)
+    style = ttk.Style()
+    style.theme_use("clam")
+
+    style.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+    style.configure("TFrame", background=BG)
+    style.configure("Card.TFrame", background=SURFACE)
+    style.configure("TLabel", background=BG, foreground=TEXT)
+    style.configure("Card.TLabel", background=SURFACE, foreground=TEXT)
+    style.configure("Muted.TLabel", background=SURFACE, foreground=MUTED,
+                    font=("Segoe UI", 9))
+    style.configure("Title.TLabel", background=BG, foreground=TEXT,
+                    font=("Segoe UI Semibold", 16))
+    style.configure("Sub.TLabel", background=BG, foreground=MUTED,
+                    font=("Segoe UI", 9))
+    style.configure("Section.TLabel", background=SURFACE, foreground=ACCENT,
+                    font=("Segoe UI Semibold", 9))
+    style.configure("Path.TLabel", background=SURFACE_ALT, foreground=TEXT,
+                    font=("Consolas", 9), padding=(8, 6))
+    style.configure("Status.TLabel", background=BG, foreground=MUTED,
+                    font=("Segoe UI", 9))
+
+    style.configure("TButton", background=SURFACE_ALT, foreground=TEXT,
+                    borderwidth=0, focusthickness=0, padding=(14, 8))
+    style.map("TButton",
+              background=[("active", BORDER), ("disabled", SURFACE)],
+              foreground=[("disabled", MUTED)])
+
+    style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
+                    borderwidth=0, padding=(18, 9),
+                    font=("Segoe UI Semibold", 10))
+    style.map("Accent.TButton",
+              background=[("active", ACCENT_DIM), ("disabled", BORDER)],
+              foreground=[("disabled", MUTED)])
+
+    style.configure("Horizontal.TProgressbar", troughcolor=SURFACE_ALT,
+                    background=ACCENT, borderwidth=0, thickness=10,
+                    lightcolor=ACCENT, darkcolor=ACCENT)
+
+    style.configure("TCheckbutton", background=SURFACE, foreground=TEXT)
+    style.map("TCheckbutton",
+              background=[("active", SURFACE)],
+              indicatorcolor=[("selected", ACCENT), ("!selected", SURFACE_ALT)])
+
+    style.configure("TSpinbox", fieldbackground=SURFACE_ALT, background=SURFACE_ALT,
+                    foreground=TEXT, arrowcolor=TEXT, borderwidth=0, padding=4)
+    style.configure("TCombobox", fieldbackground=SURFACE_ALT, background=SURFACE_ALT,
+                    foreground=TEXT, arrowcolor=TEXT, borderwidth=0, padding=4)
+    style.map("TCombobox", fieldbackground=[("readonly", SURFACE_ALT)])
+    style.configure("TEntry", fieldbackground=SURFACE_ALT, foreground=TEXT,
+                    insertcolor=TEXT, borderwidth=0, padding=4)
 
 
 # --- worker ------------------------------------------------------------------
@@ -370,55 +425,7 @@ class App:
 
     # -- styling --
     def _build_style(self):
-        self.root.configure(bg=BG)
-        style = ttk.Style()
-        style.theme_use("clam")
-
-        style.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
-        style.configure("TFrame", background=BG)
-        style.configure("Card.TFrame", background=SURFACE)
-        style.configure("TLabel", background=BG, foreground=TEXT)
-        style.configure("Card.TLabel", background=SURFACE, foreground=TEXT)
-        style.configure("Muted.TLabel", background=SURFACE, foreground=MUTED,
-                        font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT,
-                        font=("Segoe UI Semibold", 16))
-        style.configure("Sub.TLabel", background=BG, foreground=MUTED,
-                        font=("Segoe UI", 9))
-        style.configure("Section.TLabel", background=SURFACE, foreground=ACCENT,
-                        font=("Segoe UI Semibold", 9))
-        style.configure("Path.TLabel", background=SURFACE_ALT, foreground=TEXT,
-                        font=("Consolas", 9), padding=(8, 6))
-        style.configure("Status.TLabel", background=BG, foreground=MUTED,
-                        font=("Segoe UI", 9))
-
-        style.configure("TButton", background=SURFACE_ALT, foreground=TEXT,
-                        borderwidth=0, focusthickness=0, padding=(14, 8))
-        style.map("TButton",
-                  background=[("active", BORDER), ("disabled", SURFACE)],
-                  foreground=[("disabled", MUTED)])
-
-        style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
-                        borderwidth=0, padding=(18, 9),
-                        font=("Segoe UI Semibold", 10))
-        style.map("Accent.TButton",
-                  background=[("active", ACCENT_DIM), ("disabled", BORDER)],
-                  foreground=[("disabled", MUTED)])
-
-        style.configure("Horizontal.TProgressbar", troughcolor=SURFACE_ALT,
-                        background=ACCENT, borderwidth=0, thickness=10,
-                        lightcolor=ACCENT, darkcolor=ACCENT)
-
-        style.configure("TCheckbutton", background=SURFACE, foreground=TEXT)
-        style.map("TCheckbutton",
-                  background=[("active", SURFACE)],
-                  indicatorcolor=[("selected", ACCENT), ("!selected", SURFACE_ALT)])
-
-        style.configure("TSpinbox", fieldbackground=SURFACE_ALT, background=SURFACE_ALT,
-                        foreground=TEXT, arrowcolor=TEXT, borderwidth=0, padding=4)
-        style.configure("TCombobox", fieldbackground=SURFACE_ALT, background=SURFACE_ALT,
-                        foreground=TEXT, arrowcolor=TEXT, borderwidth=0, padding=4)
-        style.map("TCombobox", fieldbackground=[("readonly", SURFACE_ALT)])
+        apply_style(self.root)
 
     def _card(self, parent, title):
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
